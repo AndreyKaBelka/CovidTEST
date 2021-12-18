@@ -5,16 +5,12 @@ import random
 import secrets
 import string
 import uuid
-from datetime import timedelta, datetime
+from datetime import datetime
 from urllib.parse import urljoin
 
-import idna
-import pytz
 from dateutil.relativedelta import relativedelta
-from fakeredis import FakeRedis
 from flask import Flask, request, send_file, render_template, redirect, url_for
 from flask_httpauth import HTTPDigestAuth
-from flask_redis import FlaskRedis
 from pyqrcode import QRCode
 from transliterate import translit
 
@@ -22,10 +18,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(32)
 app.config['REDIS_URL'] = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 auth = HTTPDigestAuth()
-if app.testing:
-    redis_client = FakeRedis(app)
-else:
-    redis_client = FlaskRedis(app)
+certificates = {}
 
 users = {
     'admin': {
@@ -69,10 +62,6 @@ def home():
 
 @app.route('/covid-cert/verify/<string:unrz>')
 def covid_cert_verify(unrz: str):
-    if not redis_client.exists(unrz):
-        query = request.query_string.decode('utf-8').replace("'", '')
-        real_url_check = f'https://www.gosuslugi.ru/covid-cert/verify/{unrz}?{query}'
-        return redirect(real_url_check)
     return render_template('covid-cert.html', unrz=unrz)
 
 
@@ -103,7 +92,6 @@ def covid_config():
         },
         "portalCfgUrl": "//www.gosuslugi.ru/api/portal-cfg/",
         "mainBlocksData": "//www.gosuslugi.ru/api/mainpage/v4",
-        # "covidCertCheckUrl": "//www.gosuslugi.ru/api/covid-cert/v3/cert/check/",
         "covidCertCheckUrl": "/api/covid-cert/v3/cert/check/",
         "covidCertUrl": "//www.gosuslugi.ru/api/covid-cert/v2/",
         "registerCovidUrl": "//www.gosuslugi.ru/api/register-covid/v2/",
@@ -117,11 +105,8 @@ def covid_config():
 
 @app.route('/api/covid-cert/v3/cert/check/<string:unrz>')
 def covid_cert_check(unrz: str):
-    if not redis_client.exists(unrz):
-        return {}
-
-    config = redis_client.hgetall(unrz)
-    config = {x.decode('utf-8'): config.get(x).decode('utf-8') for x in config}
+    config = certificates[unrz]
+    config = {x: config.get(x) for x in config}
 
     en_first_name = translit(config['first_name'], 'ru', reversed=True)
     en_last_name = translit(config['last_name'], 'ru', reversed=True)
@@ -216,7 +201,7 @@ def qr_generator():
 
     if request.method == 'POST':
         # Генерируем случайный код пациента
-        unrz = ''.join(random.choice(string.digits) for x in range(16))
+        unrz = ''.join(random.choice(string.digits) for _ in range(16))
         # Генерируем случайный код проверки
         ck = uuid.uuid4().hex.replace('-', '')
         # Указываем язык по умолчанию
@@ -224,8 +209,8 @@ def qr_generator():
         # Создает query параметры для URL
         query_params = f'{lang=}&{ck=}'
         # Создаём URL для будущего QR-кода
-        host = idna.encode(request.host)
-        host = 'https://{}/'.format(host.decode('utf-8'))
+        request_host = os.getenv("NGROK_URL", request.host)
+        host = 'https://{}/'.format(request_host)
         url = urljoin(host, url_for('covid_cert_verify', unrz=unrz))
         url += '?' + query_params.replace("'", '')
 
@@ -238,10 +223,9 @@ def qr_generator():
         # Получаем данные из формы и записываем в Redis с указанным сроком годности
         qr_config = request.form.to_dict()
         qr_config['qr'] = qr_code
+        certificates.setdefault(unrz, {})
         for key, value in qr_config.items():
-            redis_client.hset(unrz, key, value)
-        redis_client.expire(unrz, timedelta(seconds=int(qr_config.get('expire', 3600))))
-        ttl = datetime.now(pytz.timezone(user['tz'])) + timedelta(seconds=int(qr_config.get('expire', 3600)))
+            certificates[unrz][key] = value
 
     return render_template('qr-generator.html',
                            username=auth.current_user(),
@@ -260,4 +244,5 @@ def route_frontend(path):
 
 
 if __name__ == '__main__':
-    app.run()
+    port = os.getenv("PORT", 5000)
+    app.run(host='0.0.0.0', port=port)

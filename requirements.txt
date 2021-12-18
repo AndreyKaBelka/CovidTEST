@@ -9,4 +9,3 @@ fakeredis==1.6.1
 coverage==6.1.2
 idna==3.3
 requests==2.26.0
-python-telegram-bot==13.8.1

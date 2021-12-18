@@ -1,9 +1,20 @@
-FROM tiangolo/uwsgi-nginx-flask:python3.9
+FROM python:3.8
 
-ENV STATIC_INDEX 1
+#Set the working directory
+WORKDIR /
 
-COPY ./requirements.txt /app
+#copy all the files
+COPY . .
 
-RUN pip install -r /app/requirements.txt
+#Install the dependencies
+RUN apt-get -y update
+RUN apt-get update && apt-get install -y python3 python3-pip
+RUN pip3 install -r requirements.txt
 
-COPY ./app /app
+ENV FLASK_APP=app/main
+ENV FLASK_ENV=deployment
+#Expose the required port
+EXPOSE $PORT
+
+#Run the command
+CMD flask run --host 0.0.0.0 -p $PORT
